@@ -1,52 +1,114 @@
 #!/usr/bin/python3
 """
-Fabric script based on the file 2-do_deploy_web_static.py that creates and
-distributes an archive to the web servers
+Fabric script that deploys to web servers.
 """
+import datetime
+import os
+import tarfile
 
-from fabric.api import env, local, put, run
-from datetime import datetime
-from os.path import exists, isdir
-env.hosts = ['142.44.167.228', '144.217.246.195']
+from fabric.api import env, put, run, local
+
+
+# Web server IPs
+env.hosts = ['34.234.201.201', '52.3.249.208']
+
+# Set the SSH key and username as environment variables
+env.key_filename = '~/.ssh/id_rsa'
+env.user = 'ubuntu'
 
 
 def do_pack():
-    """generates a tgz archive"""
+    """Generates a .tgz archive"""
     try:
-        date = datetime.now().strftime("%Y%m%d%H%M%S")
-        if isdir("versions") is False:
-            local("mkdir versions")
-        file_name = "versions/web_static_{}.tgz".format(date)
-        local("tar -cvzf {} web_static".format(file_name))
-        return file_name
-    except:
+        # Get the current working directory (where the script is located)
+        current_directory = os.getcwd()
+
+        # Define the name of the archive
+        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        archive_name = 'web_static_{}.tgz'.format(timestamp)
+
+        # Define the path to the version folder
+        versions_folder = os.path.join(current_directory, 'versions')
+
+        # Create the versions folder if it doesn't exist
+        if not os.path.exists(versions_folder):
+            os.makedirs(versions_folder)
+
+        # Function to filter out hidden directories and files
+        def is_hidden(path):
+            return os.path.basename(path).startswith('.')
+
+        # Create the full path to the archive
+        archive_path = os.path.join(versions_folder, archive_name)
+
+        # Create a .tgz archive, excluding hidden directories/files
+        with tarfile.open(archive_path, 'w:gz') as tar:
+            for root, dirs, files in os.walk(current_directory):
+                # Exclude hidden directories
+                dirs[:] = [
+                    d for d in dirs if not is_hidden(os.path.join(root, d))
+                ]
+                for file in files:
+                    # Exclude hidden files
+                    if not is_hidden(file):
+                        file_path = os.path.join(root, file)
+                        tar.add(
+                            file_path, arcname=os.path.relpath(
+                                file_path, current_directory)
+                        )
+
+        return archive_path
+
+    except Exception:
         return None
 
 
 def do_deploy(archive_path):
-    """distributes an archive to the web servers"""
-    if exists(archive_path) is False:
+    """
+    Deploy archive to web servers
+    """
+    if not os.path.exists(archive_path):
         return False
+
     try:
-        file_n = archive_path.split("/")[-1]
-        no_ext = file_n.split(".")[0]
-        path = "/data/web_static/releases/"
+        # Get the archive filename without extension
+        archive_name = os.path.basename(archive_path).split('.')[0]
+
+        # Upload the archive to /tmp/ directory on the web servers
         put(archive_path, '/tmp/')
-        run('mkdir -p {}{}/'.format(path, no_ext))
-        run('tar -xzf /tmp/{} -C {}{}/'.format(file_n, path, no_ext))
-        run('rm /tmp/{}'.format(file_n))
-        run('mv {0}{1}/web_static/* {0}{1}/'.format(path, no_ext))
-        run('rm -rf {}{}/web_static'.format(path, no_ext))
-        run('rm -rf /data/web_static/current')
-        run('ln -s {}{}/ /data/web_static/current'.format(path, no_ext))
+
+        # Create the release directory
+        release_dir = '/data/web_static/releases/{}'.format(archive_name)
+        run('mkdir -p {}'.format(release_dir))
+
+        # Uncompress the archive to the release directory
+        run('tar -xzf /tmp/{} -C {}'.format(
+            os.path.basename(archive_path), release_dir
+        ))
+
+        # Remove the archive from the web server
+        run('rm /tmp/{}'.format(os.path.basename(archive_path)))
+
+        # Move the files one directory up and delete the folder
+        run('mv {}/web_static/* {}'.format(release_dir, release_dir))
+        run('rm -rf {}/web_static'.format(release_dir))
+
+        # Delete the current symbolic link
+        current_link = '/data/web_static/current'
+        run('rm -rf {}'.format(current_link))
+
+        # Create a new symbolic link
+        run('ln -s {} {}'.format(release_dir, current_link))
+
+        # Restart the nginx service (if necessary)
+        run('sudo service nginx restart')
+
         return True
-    except:
+    except Exception:
         return False
 
 
 def deploy():
-    """creates and distributes an archive to the web servers"""
+    """Deploys archive to web servers"""
     archive_path = do_pack()
-    if archive_path is None:
-        return False
-    return do_deploy(archive_path)
+    return False if archive_path is None else do_deploy(archive_path)
